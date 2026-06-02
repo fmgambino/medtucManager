@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Recuperar acceso | Ticket Manager</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+</head>
+<body class="auth-body">
+  <main class="mini-auth">
+    <h1>Recuperar contraseña</h1>
+    <p>Ingrese su email institucional. Le enviaremos un enlace seguro para restablecer el acceso.</p>
+    <form id="recoverForm" class="form">
+      <label>Email institucional
+        <input id="recoverEmail" type="email" autocomplete="email" required placeholder="usuario@dominio.gob.ar">
+      </label>
+      <button class="btn primary" type="submit">Enviar enlace</button>
+      <a href="index.html" class="btn ghost">Volver al login</a>
+    </form>
+  </main>
+  <script src="js/config.js"></script>
+  <script src="js/auth.js"></script>
+</body>
+</html>

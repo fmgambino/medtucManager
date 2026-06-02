@@ -1,0 +1,4 @@
+# ISM Robosoft - rutas limpias
+RewriteEngine On
+RewriteRule ^registro/?$ registro.html [L]
+RewriteRule ^recuperar/?$ recuperar.html [L]

@@ -1,0 +1,406 @@
+-- =========================================================
+-- MedTuc Ticket Manager PWA - Supabase Schema v6
+-- Dirección de Informática - Área Soporte Técnico
+-- Ministerio de Educación Tucumán
+-- Ejecutar en Supabase SQL Editor sobre un proyecto nuevo.
+-- =========================================================
+
+create extension if not exists pgcrypto;
+
+-- ---------- Helpers ----------
+create or replace function public.touch_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at = now();
+  return new;
+end $$;
+
+-- ---------- Roles / Perfiles ----------
+create table if not exists public.roles (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique check (name in ('SuperAdmin','Admin','Técnicos','Usuarios')),
+  description text,
+  is_system boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.permissions (
+  id uuid primary key default gen_random_uuid(),
+  code text not null unique,
+  module text not null,
+  action text not null,
+  description text,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.role_permissions (
+  role_id uuid references public.roles(id) on delete cascade,
+  permission_id uuid references public.permissions(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  primary key(role_id, permission_id)
+);
+
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  email text not null unique,
+  full_name text not null,
+  role_name text not null default 'Usuarios' check (role_name in ('SuperAdmin','Admin','Técnicos','Usuarios')),
+  office text,
+  phone text,
+  avatar_url text,
+  is_active boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- ---------- Configuración ----------
+create table if not exists public.app_settings (
+  id int primary key default 1 check (id = 1),
+  institution_name text not null default 'Ministerio de Educación Tucumán',
+  institution_area text not null default 'Dirección de Informática - Área Soporte Técnico',
+  logo_dark_url text not null default 'https://www.educaciontuc.gov.ar/wp-content/uploads/2024/10/MINISTERIO-DE-EDUCACION-blanco.png',
+  logo_light_url text not null default 'https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcQ4m5sI9rXqK72J4Ix5rqSA4U4AH3eDjmuJWQ&s',
+  primary_color text not null default '#7c5cff',
+  secondary_color text not null default '#19d3da',
+  accent_color text not null default '#22c55e',
+  background_color text not null default '#08111f',
+  card_color text not null default '#101b31',
+  telegram_enabled boolean not null default false,
+  telegram_bot_token text,
+  telegram_chat_id text,
+  updated_at timestamptz not null default now()
+);
+insert into public.app_settings(id) values (1) on conflict (id) do nothing;
+
+-- ---------- Inventario ----------
+create table if not exists public.inventory_items (
+  id uuid primary key default gen_random_uuid(),
+  code text unique,
+  name text not null,
+  category text default 'Insumo',
+  brand text,
+  model text,
+  serial_number text,
+  barcode text,
+  stock integer not null default 0 check (stock >= 0),
+  min_stock integer not null default 0,
+  location text,
+  status text not null default 'Disponible',
+  condition text default 'Nuevo',
+  notes text,
+  image_url text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.inventory_movements (
+  id uuid primary key default gen_random_uuid(),
+  item_id uuid references public.inventory_items(id) on delete set null,
+  service_order_id uuid,
+  movement_type text not null check (movement_type in ('entrada','salida','ajuste','uso_orden','devolucion')),
+  quantity integer not null check (quantity > 0),
+  previous_stock integer,
+  new_stock integer,
+  reason text,
+  user_id uuid references auth.users(id),
+  created_at timestamptz not null default now()
+);
+
+-- ---------- Estados de Orden ----------
+create table if not exists public.service_order_statuses (
+  id uuid primary key default gen_random_uuid(),
+  name text not null unique,
+  color text not null default '#64748b',
+  sort_order int not null default 0,
+  is_final boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+insert into public.service_order_statuses(name,color,sort_order,is_final) values
+('Pendiente','#f59e0b',1,false),
+('En proceso','#3b82f6',2,false),
+('Terminada','#22c55e',3,true),
+('Lista p/Retirar','#8b5cf6',4,false),
+('Entregada','#14b8a6',5,true),
+('Cancelada','#ef4444',6,true)
+on conflict (name) do nothing;
+
+-- ---------- Órdenes de Servicio ----------
+create table if not exists public.service_orders (
+  id uuid primary key default gen_random_uuid(),
+  order_number bigint generated by default as identity unique,
+  satmanager_order text,
+  origin_ticket_id uuid,
+  status_id uuid references public.service_order_statuses(id),
+  assigned_to uuid references auth.users(id),
+  attended_by uuid references auth.users(id),
+  attended_at timestamptz,
+  received_at timestamptz not null default now(),
+  finished_at timestamptz,
+  delivered_at timestamptz,
+  requester_name text,
+  requester_email text,
+  requester_phone text,
+  office text,
+  address text,
+  equipment_type text,
+  brand text,
+  model text,
+  serial_number text,
+  accessories text,
+  fault_description text not null,
+  technical_report text,
+  diagnosis text,
+  solution text,
+  observations text,
+  priority text not null default 'Media' check (priority in ('Baja','Media','Alta','Urgente')),
+  source text not null default 'PWA',
+  created_by uuid references auth.users(id),
+  updated_by uuid references auth.users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.service_order_items (
+  id uuid primary key default gen_random_uuid(),
+  service_order_id uuid not null references public.service_orders(id) on delete cascade,
+  inventory_item_id uuid not null references public.inventory_items(id),
+  quantity integer not null default 1 check (quantity > 0),
+  notes text,
+  created_by uuid references auth.users(id),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.service_order_notes (
+  id uuid primary key default gen_random_uuid(),
+  service_order_id uuid not null references public.service_orders(id) on delete cascade,
+  note_type text not null default 'interna' check (note_type in ('interna','compra','informe','ia')),
+  title text not null,
+  body text not null,
+  created_by uuid references auth.users(id),
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.service_order_history (
+  id uuid primary key default gen_random_uuid(),
+  service_order_id uuid not null references public.service_orders(id) on delete cascade,
+  action text not null,
+  previous_value text,
+  new_value text,
+  user_id uuid references auth.users(id),
+  created_at timestamptz not null default now()
+);
+
+-- ---------- Soporte Ticket público ----------
+create table if not exists public.support_tickets (
+  id uuid primary key default gen_random_uuid(),
+  ticket_number text unique not null default ('TK-' || to_char(now(),'YYYY') || '-' || upper(substr(gen_random_uuid()::text,1,8))),
+  requester_name text not null,
+  requester_email text,
+  requester_phone text,
+  office text,
+  area text,
+  subject text not null,
+  incidence_type text not null,
+  description text not null,
+  priority text not null default 'Media',
+  status text not null default 'Pendiente',
+  assigned_to uuid references auth.users(id),
+  attended_by uuid references auth.users(id),
+  attended_at timestamptz,
+  service_order_id uuid references public.service_orders(id),
+  public_token uuid not null default gen_random_uuid(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- ---------- Préstamos ----------
+create table if not exists public.loans (
+  id uuid primary key default gen_random_uuid(),
+  requester_name text not null,
+  requester_email text,
+  office text,
+  item_id uuid references public.inventory_items(id),
+  item_description text,
+  quantity integer not null default 1,
+  requested_at timestamptz not null default now(),
+  start_at timestamptz,
+  due_at timestamptz,
+  returned_at timestamptz,
+  status text not null default 'Pendiente',
+  observations text,
+  approved_by uuid references auth.users(id),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+-- ---------- Notificaciones ----------
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  title text not null,
+  body text not null,
+  module text,
+  entity_id uuid,
+  target_role text,
+  target_user uuid references auth.users(id),
+  is_read boolean not null default false,
+  created_by uuid references auth.users(id),
+  created_at timestamptz not null default now()
+);
+
+-- ---------- Triggers updated_at ----------
+do $$
+declare t text;
+begin
+  foreach t in array array['roles','profiles','app_settings','inventory_items','service_order_statuses','service_orders','support_tickets','loans'] loop
+    execute format('drop trigger if exists trg_%I_updated_at on public.%I', t, t);
+    execute format('create trigger trg_%I_updated_at before update on public.%I for each row execute function public.touch_updated_at()', t, t);
+  end loop;
+end $$;
+
+-- ---------- Stock automático al usar insumos en Orden ----------
+create or replace function public.consume_stock_for_service_order()
+returns trigger language plpgsql security definer as $$
+declare prev int; newstock int;
+begin
+  select stock into prev from public.inventory_items where id = new.inventory_item_id for update;
+  if prev is null then raise exception 'Insumo no encontrado'; end if;
+  if prev < new.quantity then raise exception 'Stock insuficiente. Disponible: %, solicitado: %', prev, new.quantity; end if;
+  newstock := prev - new.quantity;
+  update public.inventory_items set stock = newstock where id = new.inventory_item_id;
+  insert into public.inventory_movements(item_id, service_order_id, movement_type, quantity, previous_stock, new_stock, reason, user_id)
+  values(new.inventory_item_id, new.service_order_id, 'uso_orden', new.quantity, prev, newstock, 'Uso de insumo en Orden de Servicio', new.created_by);
+  return new;
+end $$;
+
+drop trigger if exists trg_consume_stock_for_service_order on public.service_order_items;
+create trigger trg_consume_stock_for_service_order
+after insert on public.service_order_items
+for each row execute function public.consume_stock_for_service_order();
+
+-- ---------- Notificaciones automáticas ----------
+create or replace function public.notify_service_order_change()
+returns trigger language plpgsql security definer as $$
+declare old_status text; new_status text; actor text;
+begin
+  if tg_op = 'INSERT' then
+    select name into new_status from public.service_order_statuses where id = new.status_id;
+    insert into public.notifications(title, body, module, entity_id, created_by)
+    values('Nueva Orden de Servicio', 'Se registró la Orden Nº ' || new.order_number || ' - Estado: ' || coalesce(new_status,'Sin estado'), 'Ordenes de Servicio', new.id, new.created_by);
+    return new;
+  end if;
+
+  if coalesce(old.status_id::text,'') <> coalesce(new.status_id::text,'') then
+    select name into old_status from public.service_order_statuses where id = old.status_id;
+    select name into new_status from public.service_order_statuses where id = new.status_id;
+    insert into public.service_order_history(service_order_id, action, previous_value, new_value, user_id)
+    values(new.id, 'Cambio de estado', old_status, new_status, new.updated_by);
+    insert into public.notifications(title, body, module, entity_id, created_by)
+    values('Cambio de estado de Orden', 'La Orden Nº ' || new.order_number || ' cambió de ' || coalesce(old_status,'Sin estado') || ' a ' || coalesce(new_status,'Sin estado') || '.', 'Ordenes de Servicio', new.id, new.updated_by);
+  end if;
+
+  if old.attended_at is null and new.attended_at is not null then
+    insert into public.notifications(title, body, module, entity_id, created_by)
+    values('Orden en atención', 'La Orden Nº ' || new.order_number || ' está siendo atendida desde ' || to_char(new.attended_at,'DD/MM/YYYY HH24:MI') || '.', 'Ordenes de Servicio', new.id, new.attended_by);
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists trg_notify_service_order_insert on public.service_orders;
+create trigger trg_notify_service_order_insert after insert on public.service_orders for each row execute function public.notify_service_order_change();
+drop trigger if exists trg_notify_service_order_update on public.service_orders;
+create trigger trg_notify_service_order_update after update on public.service_orders for each row execute function public.notify_service_order_change();
+
+-- ---------- RPC: convertir Ticket en Orden ----------
+create or replace function public.create_order_from_ticket(p_ticket_id uuid)
+returns uuid language plpgsql security definer as $$
+declare t public.support_tickets%rowtype; st uuid; oid uuid;
+begin
+  select * into t from public.support_tickets where id = p_ticket_id;
+  if not found then raise exception 'Ticket no encontrado'; end if;
+  select id into st from public.service_order_statuses where name = 'Pendiente' limit 1;
+  insert into public.service_orders(status_id, origin_ticket_id, requester_name, requester_email, requester_phone, office, fault_description, priority, source, created_by)
+  values(st, t.id, t.requester_name, t.requester_email, t.requester_phone, t.office, t.description, coalesce(t.priority,'Media'), 'Soporte Ticket', auth.uid())
+  returning id into oid;
+  update public.support_tickets set service_order_id = oid, status='En proceso', attended_by=auth.uid(), attended_at=now() where id = p_ticket_id;
+  return oid;
+end $$;
+
+-- ---------- Seed base ----------
+insert into public.roles(name, description, is_system) values
+('SuperAdmin','Acceso total al sistema, configuración, roles y auditoría.', true),
+('Admin','Administración operativa de módulos institucionales.', true),
+('Técnicos','Gestión técnica de tickets, órdenes, inventario y préstamos según permisos.', true),
+('Usuarios','Carga y seguimiento de tickets públicos/institucionales.', true)
+on conflict(name) do nothing;
+
+insert into public.permissions(code,module,action,description)
+select code,module,action,description from (values
+('users.read','Usuarios','read','Ver usuarios'),('users.create','Usuarios','create','Crear usuarios'),('users.update','Usuarios','update','Editar usuarios'),('users.delete','Usuarios','delete','Eliminar usuarios'),
+('roles.manage','Roles y Permisos','manage','Administrar roles y permisos'),
+('inventory.read','Inventario','read','Ver inventario'),('inventory.manage','Inventario','manage','Administrar inventario'),('inventory.export','Inventario','export','Exportar inventario'),
+('loans.read','Gestión de Préstamos','read','Ver préstamos'),('loans.manage','Gestión de Préstamos','manage','Administrar préstamos'),
+('tickets.read','Soporte Ticket','read','Ver tickets'),('tickets.manage','Soporte Ticket','manage','Administrar tickets'),('tickets.public_create','Soporte Ticket','create','Crear ticket público'),
+('orders.read','Ordenes de Servicios','read','Ver órdenes'),('orders.manage','Ordenes de Servicios','manage','Administrar órdenes'),('orders.import','Ordenes de Servicios','import','Importar SATMANAGER/Access'),('orders.print','Ordenes de Servicios','print','Imprimir rótulos y comprobantes'),
+('notifications.read','Notificaciones','read','Ver notificaciones'),('notifications.manage','Notificaciones','manage','Administrar notificaciones'),
+('profile.manage','Mi Perfil','manage','Administrar perfil'),('settings.manage','Configuraciones','manage','Administrar configuración')
+) as p(code,module,action,description)
+on conflict(code) do nothing;
+
+insert into public.role_permissions(role_id, permission_id)
+select r.id, p.id from public.roles r cross join public.permissions p where r.name='SuperAdmin'
+on conflict do nothing;
+
+insert into public.role_permissions(role_id, permission_id)
+select r.id, p.id from public.roles r join public.permissions p on p.code in (
+'users.read','users.create','users.update','roles.manage','inventory.read','inventory.manage','inventory.export','loans.read','loans.manage','tickets.read','tickets.manage','orders.read','orders.manage','orders.import','orders.print','notifications.read','notifications.manage','profile.manage','settings.manage'
+) where r.name='Admin'
+on conflict do nothing;
+
+insert into public.role_permissions(role_id, permission_id)
+select r.id, p.id from public.roles r join public.permissions p on p.code in (
+'inventory.read','loans.read','loans.manage','tickets.read','tickets.manage','orders.read','orders.manage','orders.print','notifications.read','profile.manage'
+) where r.name='Técnicos'
+on conflict do nothing;
+
+insert into public.role_permissions(role_id, permission_id)
+select r.id, p.id from public.roles r join public.permissions p on p.code in (
+'tickets.public_create','notifications.read','profile.manage'
+) where r.name='Usuarios'
+on conflict do nothing;
+
+-- ---------- RLS ----------
+alter table public.roles enable row level security;
+alter table public.permissions enable row level security;
+alter table public.role_permissions enable row level security;
+alter table public.profiles enable row level security;
+alter table public.app_settings enable row level security;
+alter table public.inventory_items enable row level security;
+alter table public.inventory_movements enable row level security;
+alter table public.service_order_statuses enable row level security;
+alter table public.service_orders enable row level security;
+alter table public.service_order_items enable row level security;
+alter table public.service_order_notes enable row level security;
+alter table public.service_order_history enable row level security;
+alter table public.support_tickets enable row level security;
+alter table public.loans enable row level security;
+alter table public.notifications enable row level security;
+
+-- Políticas simples para entorno institucional. Ajustar en producción si se requiere mayor granularidad.
+do $$
+declare t text;
+begin
+  foreach t in array array['roles','permissions','role_permissions','profiles','app_settings','inventory_items','inventory_movements','service_order_statuses','service_orders','service_order_items','service_order_notes','service_order_history','loans','notifications'] loop
+    execute format('drop policy if exists authenticated_all on public.%I', t);
+    execute format('create policy authenticated_all on public.%I for all to authenticated using (true) with check (true)', t);
+  end loop;
+end $$;
+
+drop policy if exists public_insert_support_tickets on public.support_tickets;
+create policy public_insert_support_tickets on public.support_tickets for insert to anon, authenticated with check (true);
+drop policy if exists authenticated_support_tickets on public.support_tickets;
+create policy authenticated_support_tickets on public.support_tickets for all to authenticated using (true) with check (true);
+
+-- Storage sugerido: crear bucket público/privado desde Dashboard si se suben imágenes/adjuntos.

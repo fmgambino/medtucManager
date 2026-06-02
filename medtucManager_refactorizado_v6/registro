@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b1220" />
+  <title>ISM Robosoft | Registro</title>
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./assets/logo.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="./styles.css?v=40.0" />
+</head>
+<body class="auth-page">
+  <main class="login-shell compact auth-single">
+    <section class="auth-card glass auth-card-clean">
+      <img src="./assets/img/logo-Coordinacion-Robotica.png" alt="Instituto San Miguel" class="brand-logo large centered-logo" />
+      <span class="badge">Solicitud de acceso</span>
+      <h2>Crear cuenta</h2>
+      <p class="muted">Tu cuenta quedará inactiva hasta que un administrador la autorice desde el módulo Usuarios.</p>
+      <form id="registerForm" class="form-grid single-col">
+        <label><span>Nombre completo</span><input type="text" id="regFullName" autocomplete="name" required /></label>
+        <label><span>Email</span><input type="email" id="regEmail" autocomplete="email" required /></label>
+        <label><span>Perfil solicitado</span><select id="regRole"><option value="student">Alumno</option><option value="teacher">Docente</option></select></label>
+        <label><span>Contraseña</span><input type="password" id="regPassword" minlength="6" autocomplete="new-password" required /></label>
+        <button class="btn btn-primary" type="submit">Solicitar acceso</button>
+      </form>
+      <div class="auth-links-row"><a class="btn btn-secondary" href="./index.html">Volver al login</a><a class="btn btn-secondary" href="./recuperar.html">Recuperar contraseña</a></div>
+      <p id="authMessage" class="form-message"></p>
+      <a class="cafecito-auth" href="https://cafecito.app/fmgambino" rel="noopener" target="_blank"><img srcset="https://cdn.cafecito.app/imgs/buttons/button_3.png 1x, https://cdn.cafecito.app/imgs/buttons/button_3_2x.png 2x, https://cdn.cafecito.app/imgs/buttons/button_3_3.75x.png 3.75x" src="https://cdn.cafecito.app/imgs/buttons/button_3.png" alt="Invitame un café en cafecito.app" /></a>
+    </section>
+  </main>
+  <footer class="site-footer modern-footer"><div class="footer-brand">ISM ROBOSOFT© 2026</div><div class="footer-copy">Tucumán · Argentina · by <a href="https://electronicagambino.com" rel="noopener" target="_blank">Ing. Fernando Gambino</a></div><div class="footer-rights">Todos los Derechos Registrados · @ Cafecito</div></footer>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./js/config.js?v=10.1"></script>
+  <script src="./js/supabaseClient.js?v=10.1"></script>
+  <script>if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.getRegistrations?.().then(rs => rs.forEach(r => r.unregister())).catch(console.error));</script>
+  <script src="./registro.js?v=10.1"></script>
+</body>
+</html>

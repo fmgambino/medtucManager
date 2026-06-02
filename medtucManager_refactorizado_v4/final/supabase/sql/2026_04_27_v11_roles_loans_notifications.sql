@@ -1,0 +1,299 @@
+-- ISM Robosoft v11 - Patch final de base de datos
+-- Ejecutar completo en Supabase SQL Editor.
+
+begin;
+
+-- 1) Limpiar RPC duplicados de inventario para evitar: could not choose best candidate function.
+drop function if exists public.admin_update_inventory_asset(uuid, text, text, text, text, text, text, text, text, text, text, text);
+drop function if exists public.admin_update_inventory_asset(uuid, text, uuid, uuid, text, uuid, text, text, text, uuid, uuid, text);
+drop function if exists public.admin_update_inventory_asset(uuid, text, uuid, uuid, text, uuid, text, text, uuid, uuid, uuid, text);
+
+create or replace function public.admin_update_inventory_asset(
+  p_asset_id uuid,
+  p_barcode text default null,
+  p_brand text default null,
+  p_category text default null,
+  p_condition_note text default null,
+  p_location_code text default null,
+  p_location_detail text default null,
+  p_name text default null,
+  p_serial_number text default null,
+  p_status text default null,
+  p_supplier text default null,
+  p_zone text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_category_id uuid;
+  v_brand_id uuid;
+  v_supplier_id uuid;
+  v_location_id uuid;
+  v_status_id uuid;
+  v_catalog_id uuid;
+begin
+  if p_asset_id is null then
+    raise exception 'p_asset_id es obligatorio';
+  end if;
+
+  if nullif(trim(coalesce(p_category,'')), '') is not null then
+    insert into public.inventory_categories(name) values (trim(p_category))
+    on conflict (name) do update set updated_at = now()
+    returning id into v_category_id;
+  end if;
+
+  if nullif(trim(coalesce(p_brand,'')), '') is not null then
+    insert into public.inventory_brands(name) values (trim(p_brand))
+    on conflict (name) do update set name = excluded.name
+    returning id into v_brand_id;
+  end if;
+
+  if nullif(trim(coalesce(p_supplier,'')), '') is not null then
+    insert into public.inventory_suppliers(name) values (trim(p_supplier))
+    on conflict (name) do update set name = excluded.name
+    returning id into v_supplier_id;
+  end if;
+
+  if nullif(trim(coalesce(p_location_code,'')), '') is not null then
+    select id into v_location_id from public.inventory_locations where code = trim(p_location_code) or name = trim(p_location_code) limit 1;
+    if v_location_id is null then
+      insert into public.inventory_locations(code, name) values (trim(p_location_code), trim(p_location_code)) returning id into v_location_id;
+    end if;
+  end if;
+
+  if nullif(trim(coalesce(p_status,'')), '') is not null then
+    select id into v_status_id from public.inventory_status_catalog
+    where code = lower(regexp_replace(trim(p_status), '\s+', '_', 'g')) or name = trim(p_status) or frontend_status = trim(p_status)
+    limit 1;
+  end if;
+
+  select catalog_item_id into v_catalog_id from public.inventory_assets where id = p_asset_id;
+  if v_catalog_id is not null then
+    update public.inventory_catalog_items
+      set name = coalesce(nullif(trim(p_name), ''), name),
+          category_id = coalesce(v_category_id, category_id),
+          brand_id = coalesce(v_brand_id, brand_id),
+          supplier_id = coalesce(v_supplier_id, supplier_id),
+          updated_at = now()
+    where id = v_catalog_id;
+  end if;
+
+  update public.inventory_assets
+    set barcode = coalesce(nullif(trim(p_barcode), ''), barcode),
+        serial_number = nullif(trim(coalesce(p_serial_number, serial_number)), ''),
+        condition_note = coalesce(nullif(trim(p_condition_note), ''), condition_note),
+        current_location_id = coalesce(v_location_id, current_location_id),
+        status_id = coalesce(v_status_id, status_id),
+        location_detail = coalesce(nullif(trim(p_location_detail), ''), location_detail),
+        zone = coalesce(nullif(trim(p_zone), ''), zone),
+        updated_at = now()
+  where id = p_asset_id;
+
+  return p_asset_id;
+end;
+$$;
+
+grant execute on function public.admin_update_inventory_asset(uuid,text,text,text,text,text,text,text,text,text,text,text) to authenticated;
+
+-- 2) Roles/permisos: docentes sin usuarios ni ABM de inventario. Gestión de préstamos y notificaciones para todos.
+insert into public.permissions(code, name, module) values
+('loan.read','Ver préstamos','loanManagement'),
+('loan.create','Crear solicitudes de préstamo','loanManagement'),
+('notifications.read','Ver notificaciones','notifications'),
+('notifications.send','Enviar notificaciones','notifications')
+on conflict (code) do update set name = excluded.name, module = excluded.module;
+
+-- Quitar permisos de usuarios y edición de inventario a docentes/alumnos.
+delete from public.role_permissions rp
+using public.roles r, public.permissions p
+where rp.role_id = r.id and rp.permission_id = p.id
+  and r.code in ('teacher','student')
+  and p.code in ('users.read','users.manage','inventory.manage','roles.manage');
+
+-- Asegurar permisos básicos a todos los perfiles.
+insert into public.role_permissions(role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('inventory.read','inventory.loan','loan.read','loan.create','notifications.read')
+where r.code in ('administrator','teacher','student')
+on conflict do nothing;
+
+-- Admin conserva gestión completa.
+insert into public.role_permissions(role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on p.code in ('users.read','users.manage','roles.manage','inventory.manage','inventory.approve','loan.read','loan.create','notifications.read','notifications.send')
+where r.code = 'administrator'
+on conflict do nothing;
+
+-- 3) Notificaciones reales.
+create table if not exists public.notifications (
+  id uuid primary key default gen_random_uuid(),
+  recipient_profile_id uuid references public.profiles(id) on delete cascade,
+  title text not null,
+  message text not null,
+  section text default 'notifications',
+  read_at timestamptz,
+  created_by uuid references public.profiles(id),
+  created_at timestamptz default now()
+);
+
+create index if not exists notifications_recipient_created_idx on public.notifications(recipient_profile_id, created_at desc);
+
+create or replace view public.notifications_frontend_view as
+select n.id, n.recipient_profile_id, n.title, n.message, n.section, n.read_at, n.created_at
+from public.notifications n
+where n.recipient_profile_id = auth.uid() or exists (
+  select 1 from public.profiles p join public.roles r on r.id = p.role_id
+  where p.id = auth.uid() and r.code = 'administrator'
+);
+
+grant select, insert, update on public.notifications to authenticated;
+grant select on public.notifications_frontend_view to authenticated;
+
+create or replace function public.notify_role(p_role_code text, p_title text, p_message text, p_section text default 'notifications')
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  insert into public.notifications(recipient_profile_id, title, message, section, created_by)
+  select p.id, p_title, p_message, p_section, auth.uid()
+  from public.profiles p join public.roles r on r.id = p.role_id
+  where p.is_active is true and r.code = p_role_code;
+end;
+$$;
+
+grant execute on function public.notify_role(text,text,text,text) to authenticated;
+
+-- 4) Préstamos reales conectados a Supabase.
+alter table public.inventory_loans add column if not exists use_date date;
+alter table public.inventory_loans add column if not exists from_time time;
+alter table public.inventory_loans add column if not exists to_time time;
+
+create or replace view public.loans_frontend_view as
+select
+  l.id,
+  l.requester_profile_id as requester_id,
+  coalesce(p.full_name, 'Sin solicitante') as requester,
+  coalesce(t.name, 'Sin equipo') as team,
+  coalesce(l.use_date::text, l.requested_at::date::text) as requested_at,
+  coalesce(to_char(l.from_time,'HH24:MI'), '') as from_time,
+  coalesce(to_char(l.to_time,'HH24:MI'), '') as to_time,
+  coalesce(array_agg(coalesce(a.asset_code, a.barcode) order by a.asset_code) filter (where a.id is not null), array[]::text[]) as items,
+  coalesce(l.notes, '-') as notes,
+  l.status,
+  case l.status
+    when 'abierto' then 'Pendiente'
+    when 'aprobado' then 'Aprobado'
+    when 'rechazado' then 'Rechazado'
+    when 'cerrado' then 'Devuelto'
+    when 'cancelado' then 'Rechazado'
+    else initcap(l.status)
+  end as status_label,
+  l.created_at
+from public.inventory_loans l
+left join public.profiles p on p.id = l.requester_profile_id
+left join public.teams t on t.id = l.team_id
+left join public.inventory_loan_items li on li.loan_id = l.id
+left join public.inventory_assets a on a.id = li.asset_id
+group by l.id, p.full_name, t.name;
+
+grant select on public.loans_frontend_view to authenticated;
+
+create or replace function public.create_loan_request(
+  p_team text,
+  p_use_date date,
+  p_from_time time,
+  p_to_time time,
+  p_items text[],
+  p_notes text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_loan_id uuid;
+  v_team_id uuid;
+  v_code text;
+  v_item text;
+  v_asset_id uuid;
+begin
+  if auth.uid() is null then
+    raise exception 'No autorizado';
+  end if;
+
+  select id into v_team_id from public.teams where name = p_team limit 1;
+  v_code := 'PRE-' || to_char(now(), 'YYYYMMDDHH24MISS') || '-' || substr(auth.uid()::text, 1, 4);
+
+  insert into public.inventory_loans(
+    loan_code, requester_profile_id, team_id, requested_at, use_date, from_time, to_time, notes, status, created_by
+  ) values (
+    v_code, auth.uid(), v_team_id, now(), p_use_date, p_from_time, p_to_time, p_notes, 'abierto', auth.uid()
+  ) returning id into v_loan_id;
+
+  foreach v_item in array coalesce(p_items, array[]::text[]) loop
+    select id into v_asset_id from public.inventory_assets where asset_code = v_item or barcode = v_item limit 1;
+    if v_asset_id is not null then
+      insert into public.inventory_loan_items(loan_id, asset_id, quantity, notes) values (v_loan_id, v_asset_id, 1, p_notes);
+    end if;
+  end loop;
+
+  insert into public.notifications(recipient_profile_id, title, message, section, created_by)
+  select p.id, 'Nueva solicitud de préstamo', coalesce(req.full_name,'Un usuario') || ' solicitó ' || array_to_string(p_items, ', ') || ' para ' || coalesce(p_team,'equipo/curso') || '.', 'loanManagement', auth.uid()
+  from public.profiles p
+  join public.roles r on r.id = p.role_id and r.code = 'administrator'
+  left join public.profiles req on req.id = auth.uid()
+  where p.is_active is true;
+
+  return v_loan_id;
+end;
+$$;
+
+grant execute on function public.create_loan_request(text,date,time,time,text[],text) to authenticated;
+
+create or replace function public.admin_update_loan_status(p_loan_id uuid, p_status_label text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  v_status text;
+  v_requester uuid;
+begin
+  v_status := case p_status_label
+    when 'Aprobado' then 'aprobado'
+    when 'Rechazado' then 'rechazado'
+    when 'Devuelto' then 'cerrado'
+    else 'abierto'
+  end;
+  update public.inventory_loans set status = v_status, updated_at = now() where id = p_loan_id returning requester_profile_id into v_requester;
+  if v_requester is not null then
+    insert into public.notifications(recipient_profile_id, title, message, section, created_by)
+    values (v_requester, 'Solicitud de préstamo actualizada', 'Tu solicitud fue marcada como ' || p_status_label || '.', 'loanManagement', auth.uid());
+  end if;
+end;
+$$;
+
+grant execute on function public.admin_update_loan_status(uuid,text) to authenticated;
+
+-- 5) Notificaciones automáticas para altas de inventario, cursos/equipos/recursos cuando existan tablas.
+create or replace function public.notify_inventory_asset_insert()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare v_name text;
+begin
+  select name into v_name from public.inventory_catalog_items where id = new.catalog_item_id;
+  insert into public.notifications(recipient_profile_id, title, message, section, created_by)
+  select p.id, 'Ingreso de inventario', 'Se registró: ' || coalesce(v_name, new.asset_code, new.barcode), 'inventory', auth.uid()
+  from public.profiles p where p.is_active is true;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_notify_inventory_asset_insert on public.inventory_assets;
+create trigger trg_notify_inventory_asset_insert after insert on public.inventory_assets
+for each row execute function public.notify_inventory_asset_insert();
+
+-- 6) Refrescar schema cache.
+notify pgrst, 'reload schema';
+
+commit;

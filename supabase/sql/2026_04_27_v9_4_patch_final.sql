@@ -1,0 +1,345 @@
+-- ISM Robosoft v9.4 - Patch final Supabase
+-- Ejecutar completo en Supabase > SQL Editor.
+-- Corrige: vistas dependientes, RPC admin_update_inventory_asset, condiciones, permisos base y recarga schema cache.
+
+create extension if not exists pgcrypto;
+create extension if not exists unaccent;
+create sequence if not exists public.inventory_asset_seq;
+
+insert into public.roles (code, name, description, is_system)
+values
+  ('administrator','Administrador','Control total del sistema', true),
+  ('teacher','Docente','Gestión docente', true),
+  ('student','Alumno','Acceso alumno', true)
+on conflict (code) do update set name = excluded.name, description = excluded.description, updated_at = now();
+
+insert into public.permissions (code, name, module)
+values
+  ('users.read','Ver usuarios','users'),
+  ('users.manage','Gestionar usuarios','users'),
+  ('roles.manage','Gestionar roles','roles'),
+  ('inventory.read','Ver inventario','inventory'),
+  ('inventory.manage','Gestionar inventario','inventory'),
+  ('inventory.loan','Solicitar préstamos','inventory'),
+  ('inventory.approve','Aprobar préstamos','inventory')
+on conflict (code) do update set name = excluded.name, module = excluded.module;
+
+insert into public.role_permissions (role_id, permission_id)
+select r.id, p.id
+from public.roles r
+join public.permissions p on (
+  (r.code = 'administrator') or
+  (r.code = 'teacher' and p.code in ('users.read','inventory.read','inventory.loan','inventory.approve')) or
+  (r.code = 'student' and p.code in ('inventory.read','inventory.loan'))
+)
+on conflict do nothing;
+
+insert into public.inventory_status_catalog (code, name, frontend_status, is_available, sort_order)
+values
+  ('disponible','Disponible','Disponible', true, 10),
+  ('prestado','Prestado','Prestado', false, 20),
+  ('en_mantenimiento','En mantenimiento','En mantenimiento', false, 30)
+on conflict (code) do update set name = excluded.name, frontend_status = excluded.frontend_status, is_available = excluded.is_available;
+
+insert into public.inventory_locations (code, name, is_active)
+values
+  ('LAB-ROB','Laboratorio de Robótica', true),
+  ('DEP-01','Depósito', true),
+  ('TALLER','Taller revisión', true)
+on conflict (code) do update set name = excluded.name, is_active = true, updated_at = now();
+
+insert into public.inventory_conditions (name, color, sort_order, is_active)
+values
+  ('Nuevo','#3b82f6',10,true),
+  ('Usado','#6366f1',20,true),
+  ('Reparado','#22c55e',30,true),
+  ('Falta piezas','#f59e0b',40,true),
+  ('Defectuoso','#ef4444',50,true),
+  ('Usado, completo','#8b5cf6',60,true),
+  ('Usado, dañado, falta piezas','#ef4444',70,true)
+on conflict (name) do update set color = excluded.color, is_active = true, updated_at = now();
+
+-- IMPORTANTE: CASCADE elimina vistas dependientes antiguas para poder recrearlas sin error 2BP01.
+drop view if exists public.inventory_assets_frontend_view cascade;
+drop view if exists public.inventory_frontend_view cascade;
+drop view if exists public.users_abm_view cascade;
+
+create view public.users_abm_view as
+select
+  p.id,
+  p.full_name,
+  au.email,
+  p.whatsapp,
+  p.dni,
+  p.birth_date,
+  p.avatar_url,
+  p.title,
+  p.is_active,
+  p.created_at,
+  r.name as role_name,
+  r.code as role_code
+from public.profiles p
+left join auth.users au on au.id = p.id
+left join public.roles r on r.id = p.role_id;
+
+grant select on public.users_abm_view to authenticated;
+
+create view public.inventory_frontend_view as
+select
+  a.id,
+  a.asset_code as code,
+  a.asset_code,
+  a.barcode,
+  a.serial_number,
+  ci.name,
+  ci.name as item,
+  case when ci.tracking_mode = 'consumible' then 'Insumo' else 'Equipo' end as type,
+  coalesce(sc.frontend_status, sc.name, 'Disponible') as status,
+  a.condition_note,
+  a.condition_note as condition,
+  a.location_detail,
+  a.zone,
+  coalesce(l.name, '-') as location,
+  c.name as category_name,
+  c.name as category,
+  b.name as brand_name,
+  b.name as brand,
+  s.name as supplier_name,
+  s.name as supplier,
+  a.is_active,
+  a.created_at,
+  a.updated_at
+from public.inventory_assets a
+join public.inventory_catalog_items ci on ci.id = a.catalog_item_id
+left join public.inventory_categories c on c.id = ci.category_id
+left join public.inventory_brands b on b.id = ci.brand_id
+left join public.inventory_suppliers s on s.id = ci.supplier_id
+left join public.inventory_status_catalog sc on sc.id = a.status_id
+left join public.inventory_locations l on l.id = a.current_location_id;
+
+-- Alias por compatibilidad con versiones anteriores.
+create view public.inventory_assets_frontend_view as select * from public.inventory_frontend_view;
+
+grant select on public.inventory_frontend_view to authenticated, anon;
+grant select on public.inventory_assets_frontend_view to authenticated, anon;
+
+create or replace function public.admin_upsert_profile_by_email(
+  p_email text,
+  p_full_name text,
+  p_role_code text default 'student',
+  p_dni text default null,
+  p_whatsapp text default null,
+  p_birth_date date default null,
+  p_title text default null,
+  p_avatar_url text default './assets/avatar-default.svg',
+  p_is_active boolean default false
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_user_id uuid;
+  v_role_id uuid;
+begin
+  select id into v_user_id from auth.users where lower(email) = lower(p_email) limit 1;
+  if v_user_id is null then
+    raise exception 'No existe usuario Auth con email %', p_email;
+  end if;
+
+  select id into v_role_id from public.roles where code = coalesce(nullif(p_role_code,''), 'student') limit 1;
+  if v_role_id is null then select id into v_role_id from public.roles where code = 'student' limit 1; end if;
+
+  insert into public.profiles (id, role_id, full_name, dni, whatsapp, birth_date, title, avatar_url, is_active, updated_at)
+  values (v_user_id, v_role_id, p_full_name, nullif(p_dni,''), nullif(p_whatsapp,''), p_birth_date, nullif(p_title,''), p_avatar_url, p_is_active, now())
+  on conflict (id) do update set
+    role_id = excluded.role_id,
+    full_name = excluded.full_name,
+    dni = excluded.dni,
+    whatsapp = excluded.whatsapp,
+    birth_date = excluded.birth_date,
+    title = excluded.title,
+    avatar_url = excluded.avatar_url,
+    is_active = excluded.is_active,
+    updated_at = now();
+
+  return v_user_id;
+end;
+$$;
+
+grant execute on function public.admin_upsert_profile_by_email(text,text,text,text,text,date,text,text,boolean) to authenticated, service_role;
+
+create or replace function public.ensure_current_user_profile()
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_role uuid;
+begin
+  select id into v_role from public.roles where code = coalesce(auth.jwt() -> 'user_metadata' ->> 'role_code','student') limit 1;
+  if v_role is null then select id into v_role from public.roles where code='student' limit 1; end if;
+  insert into public.profiles (id, role_id, full_name, is_active, avatar_url)
+  values (auth.uid(), v_role, coalesce(auth.jwt() -> 'user_metadata' ->> 'full_name', auth.jwt() ->> 'email'), false, './assets/avatar-default.svg')
+  on conflict (id) do nothing;
+end;
+$$;
+
+grant execute on function public.ensure_current_user_profile() to authenticated;
+
+-- Elimina variantes previas para evitar conflicto de firma/caché PostgREST.
+drop function if exists public.admin_update_inventory_asset(uuid,text,text,text,text,text,text,text,text,text,text,text);
+drop function if exists public.admin_update_inventory_asset(uuid,uuid,uuid,text,uuid,text,text,text,uuid,uuid,text);
+drop function if exists public.admin_update_inventory_asset(uuid,text,uuid,uuid,text,uuid,text,text,uuid,uuid,text);
+
+create function public.admin_update_inventory_asset(
+  p_asset_id uuid,
+  p_barcode text default null,
+  p_brand text default null,
+  p_category text default null,
+  p_condition_note text default null,
+  p_location_code text default null,
+  p_location_detail text default null,
+  p_name text default null,
+  p_serial_number text default null,
+  p_status text default null,
+  p_supplier text default null,
+  p_zone text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_catalog_id uuid;
+  v_category_id uuid;
+  v_brand_id uuid;
+  v_supplier_id uuid;
+  v_status_id uuid;
+  v_location_id uuid;
+  v_code text;
+begin
+  select catalog_item_id into v_catalog_id from public.inventory_assets where id = p_asset_id;
+  if v_catalog_id is null then raise exception 'No existe asset %', p_asset_id; end if;
+
+  if nullif(trim(coalesce(p_category,'')), '') is not null then
+    insert into public.inventory_categories(name) values (trim(p_category))
+    on conflict(name) do update set updated_at = now()
+    returning id into v_category_id;
+  end if;
+
+  if nullif(trim(coalesce(p_brand,'')), '') is not null then
+    insert into public.inventory_brands(name) values (trim(p_brand))
+    on conflict(name) do update set name = excluded.name
+    returning id into v_brand_id;
+  end if;
+
+  if nullif(trim(coalesce(p_supplier,'')), '') is not null then
+    insert into public.inventory_suppliers(name) values (trim(p_supplier))
+    on conflict(name) do update set name = excluded.name
+    returning id into v_supplier_id;
+  end if;
+
+  if nullif(trim(coalesce(p_status,'')), '') is not null then
+    v_code := lower(regexp_replace(unaccent(trim(p_status)), '[^a-zA-Z0-9]+', '_', 'g'));
+    insert into public.inventory_status_catalog(code, name, frontend_status, is_available)
+    values (v_code, trim(p_status), trim(p_status), trim(p_status) = 'Disponible')
+    on conflict(code) do update set name = excluded.name, frontend_status = excluded.frontend_status
+    returning id into v_status_id;
+  end if;
+
+  if nullif(trim(coalesce(p_location_code,'')), '') is not null then
+    insert into public.inventory_locations(code, name, is_active)
+    values (trim(p_location_code), case trim(p_location_code) when 'LAB-ROB' then 'Laboratorio de Robótica' when 'DEP-01' then 'Depósito' when 'TALLER' then 'Taller revisión' else trim(p_location_code) end, true)
+    on conflict(code) do update set updated_at = now(), is_active = true
+    returning id into v_location_id;
+  end if;
+
+  update public.inventory_catalog_items
+  set name = coalesce(nullif(trim(p_name), ''), name),
+      category_id = coalesce(v_category_id, category_id),
+      brand_id = coalesce(v_brand_id, brand_id),
+      supplier_id = coalesce(v_supplier_id, supplier_id),
+      updated_at = now()
+  where id = v_catalog_id;
+
+  update public.inventory_assets
+  set barcode = coalesce(nullif(trim(p_barcode), ''), barcode),
+      serial_number = coalesce(nullif(trim(p_serial_number), ''), serial_number),
+      condition_note = coalesce(nullif(trim(p_condition_note), ''), condition_note),
+      current_location_id = coalesce(v_location_id, current_location_id),
+      location_detail = coalesce(nullif(trim(p_location_detail), ''), location_detail),
+      zone = coalesce(nullif(trim(p_zone), ''), zone),
+      status_id = coalesce(v_status_id, status_id),
+      updated_at = now()
+  where id = p_asset_id;
+end;
+$$;
+
+grant execute on function public.admin_update_inventory_asset(uuid,text,text,text,text,text,text,text,text,text,text,text) to authenticated;
+
+create or replace function public.admin_create_inventory_asset(
+  p_name text,
+  p_category text default 'General',
+  p_asset_code text default null,
+  p_serial_number text default null,
+  p_barcode text default null,
+  p_location_code text default 'LAB-ROB',
+  p_condition_note text default null,
+  p_brand text default null,
+  p_supplier text default null,
+  p_location_detail text default null,
+  p_zone text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_category_id uuid; v_brand_id uuid; v_supplier_id uuid; v_status_id uuid; v_location_id uuid; v_catalog_id uuid; v_asset_id uuid; v_asset_code text; v_barcode text;
+begin
+  insert into public.inventory_categories(name) values (coalesce(nullif(trim(p_category),''),'General'))
+  on conflict(name) do update set updated_at = now() returning id into v_category_id;
+
+  if nullif(trim(coalesce(p_brand,'')), '') is not null then
+    insert into public.inventory_brands(name) values (trim(p_brand)) on conflict(name) do update set name=excluded.name returning id into v_brand_id;
+  end if;
+  if nullif(trim(coalesce(p_supplier,'')), '') is not null then
+    insert into public.inventory_suppliers(name) values (trim(p_supplier)) on conflict(name) do update set name=excluded.name returning id into v_supplier_id;
+  end if;
+  select id into v_status_id from public.inventory_status_catalog where frontend_status='Disponible' limit 1;
+  insert into public.inventory_locations(code, name, is_active)
+  values (coalesce(nullif(trim(p_location_code),''),'LAB-ROB'), coalesce(nullif(trim(p_location_code),''),'LAB-ROB'), true)
+  on conflict(code) do update set is_active = true returning id into v_location_id;
+
+  insert into public.inventory_catalog_items(name, category_id, brand_id, supplier_id, tracking_mode)
+  values (p_name, v_category_id, v_brand_id, v_supplier_id, 'serializado') returning id into v_catalog_id;
+
+  v_asset_code := coalesce(nullif(trim(p_asset_code),''), 'AR' || lpad(nextval('public.inventory_asset_seq')::text, 6, '0'));
+  v_barcode := coalesce(nullif(trim(p_barcode),''), 'ISMROB-' || v_asset_code);
+
+  insert into public.inventory_assets(catalog_item_id, asset_code, barcode, serial_number, status_id, condition_note, current_location_id, location_detail, zone)
+  values (v_catalog_id, v_asset_code, v_barcode, nullif(trim(coalesce(p_serial_number,'')),''), v_status_id, nullif(trim(coalesce(p_condition_note,'')),''), v_location_id, nullif(trim(coalesce(p_location_detail,'')),''), nullif(trim(coalesce(p_zone,'')),''))
+  returning id into v_asset_id;
+
+  return v_asset_id;
+end;
+$$;
+
+grant execute on function public.admin_create_inventory_asset(text,text,text,text,text,text,text,text,text,text,text) to authenticated;
+
+alter table public.inventory_conditions enable row level security;
+do $$ begin create policy inventory_conditions_select_all on public.inventory_conditions for select to anon, authenticated using (true); exception when duplicate_object then null; end $$;
+do $$ begin create policy inventory_conditions_write_auth on public.inventory_conditions for all to authenticated using (true) with check (true); exception when duplicate_object then null; end $$;
+
+grant select, insert, update on public.inventory_conditions to authenticated;
+grant select on public.inventory_conditions to anon;
+grant select, insert, update on public.inventory_assets, public.inventory_catalog_items, public.inventory_categories, public.inventory_brands, public.inventory_suppliers, public.inventory_locations, public.inventory_status_catalog to authenticated;
+grant usage, select on sequence public.inventory_asset_seq to authenticated;
+
+-- Fuerza a PostgREST/Supabase a refrescar el schema cache para que vea las RPC recién creadas.
+notify pgrst, 'reload schema';
