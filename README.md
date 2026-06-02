@@ -43,7 +43,7 @@ http://localhost:3000/index.html
 
 ## Google Auth
 
-En Supabase:
+En Supabase: papapantera55
 
 1. Ir a **Authentication > Providers > Google**.
 2. Activar Google.
