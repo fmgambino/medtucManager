@@ -1,6 +1,0 @@
-{
-  "rewrites": [
-    { "source": "/registro", "destination": "/registro.html" },
-    { "source": "/recuperar", "destination": "/recuperar.html" }
-  ]
-}

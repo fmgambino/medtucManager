@@ -1,2 +1,0 @@
-nro_orden;sat_id;fecha_ingreso;dependencia;solicitante;bien_tipo;bien_marca;bien_modelo;serie;problema;diagnostico;solucion;tecnico;prioridad;estado
-OT-2026-0001;SAT-001;2026-06-02;Dirección de Informática;Mesa de Entrada;PC Escritorio;Lenovo;ThinkCentre;PAT-0001;No inicia;Pendiente;Pendiente;Ing. Fernando Gambino;Alta;Pendiente

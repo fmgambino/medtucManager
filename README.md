@@ -1,98 +1,213 @@
-# Ticket Manager PWA – Ministerio de Educación Tucumán
+# Ticket Manager v7 - Ministerio de Educación Tucumán
 
-PWA estática para GitHub Pages + Supabase, basada en los módulos funcionales del proyecto `botSoft_v52_notificaciones_routing_fix`:
+PWA institucional con HTML5, CSS3, JavaScript, SweetAlert2, Supabase Auth/Database, CSV/PDF A4, módulo público `/soporteticket` y panel administrativo.
 
-- Dashboard
+## Perfiles válidos
+
+- SuperAdmin
+- Admin
+- Técnicos
 - Usuarios
-- Roles y permisos
-- Equipos
-- Inventario
-- Gestión de préstamos
-- Soporte Ticket
-- Control de acceso
-- Campus docente
-- Biblioteca digital
-- Notificaciones
-- Mi perfil
-- Configuraciones
-- Cerrar sesión
 
-También incluye formulario público en:
+Se eliminaron referencias a Docente, Mentor, Alumno, Campus, Biblioteca y módulos del proyecto educativo original.
 
-```txt
-/soporteticket/
+## Instalación rápida
+
+1. Crear un proyecto en Supabase.
+2. Ir a **SQL Editor** y ejecutar:
+
+```sql
+supabase/schema_med_tuc_ticket_manager_v7.sql
 ```
 
-Ese formulario permite que oficinas/reparticiones generen tickets sin iniciar sesión. Los registros se insertan en la tabla `support_tickets` de Supabase. Si Supabase no está configurado, se guardan temporalmente en `localStorage` para pruebas locales.
+3. Crear el usuario en Supabase Auth:
 
-## Usuario local de prueba
-
-```txt
+```text
 Email: fernando.m.gambino@gmail.com
-Contraseña: Jamboree0342$$
+Password: Jamboree0342$$
 ```
 
-## Configurar Supabase
+4. Ejecutar nuevamente el bloque final del SQL o todo el SQL completo para que el usuario quede como `SuperAdmin` activo.
+5. Editar `js/config.js` y colocar URL + ANON KEY del proyecto Supabase.
+6. Servir localmente:
 
-1. Crear proyecto en Supabase.
-2. Ejecutar las migraciones incluidas en `/supabase/sql/` y `/supabase/migrations/`.
-3. Ejecutar también el bloque `public_support_ticket_policy.sql` incluido en este paquete.
-4. Copiar `js/config.example.js` como `js/config.js`.
-5. Completar:
-
-```js
-window.APP_CONFIG = {
-  SUPABASE_URL: 'https://TU-PROYECTO.supabase.co',
-  SUPABASE_ANON_KEY: 'TU_ANON_KEY',
-  SITE_URL: 'https://fmgambino.github.io/TU-REPO'
-};
+```bash
+npx serve .
 ```
 
-## Configurar inicio de sesión con Google
+7. Abrir:
+
+```text
+http://localhost:3000/index.html
+```
+
+## Google Auth
 
 En Supabase:
 
-1. Ir a **Authentication → Providers → Google**.
-2. Activar Google Provider.
-3. Crear credenciales OAuth en Google Cloud Console.
-4. En Google Cloud Console agregar el redirect URI que muestra Supabase, normalmente:
+1. Ir a **Authentication > Providers > Google**.
+2. Activar Google.
+3. Cargar Client ID y Client Secret desde Google Cloud Console.
+4. En Google Cloud Console agregar como Authorized redirect URI:
 
-```txt
+```text
 https://TU-PROYECTO.supabase.co/auth/v1/callback
 ```
 
-5. Copiar **Client ID** y **Client Secret** en Supabase.
-6. En **Authentication → URL Configuration** configurar:
+5. En Supabase **Authentication > URL Configuration** agregar:
+
+```text
+http://localhost:3000/app.html
+https://USUARIO.github.io/REPOSITORIO/app.html
+```
+
+## Formulario público
+
+El formulario público está en:
+
+```text
+/soporteticket/
+```
+
+Permite insertar tickets sin login mediante política RLS pública controlada.
+
+## Órdenes de Servicio
+
+Incluye:
+
+- Estados configurables con color.
+- Alta, edición, eliminación y búsqueda.
+- Impresión de ingreso de equipo.
+- Impresión de entrega.
+- Historial de cambios de estado.
+- Notificaciones automáticas.
+- Notas para compras/manuales y borrador tipo IA basado en la orden.
+- Importador SATMANAGER vía CSV inteligente.
+
+> Nota: el navegador no puede leer directamente archivos `.MDB` de Access sin backend/driver ODBC. Para GitHub Pages se incluye importación CSV inteligente. Exportar desde SATMANAGER/Access a CSV y subirlo desde el módulo Órdenes.
+
+## Reportes
+
+Todos los módulos principales tienen:
+
+- Exportar CSV.
+- Exportar PDF A4 con rótulo, fecha, hora y usuario.
+
+## PWA
+
+Incluye `manifest.webmanifest` y `sw.js` para instalación en escritorio/móvil.
+
+## Corrección v7.1 - Autenticación Supabase
+
+Esta versión corrige el flujo de autenticación:
+
+- `index.html`: login con email/contraseña, Google OAuth y creación de usuario institucional.
+- `recuperar.html`: recuperación de contraseña sin error `loginForm is not defined`.
+- `reset-password.html`: pantalla nueva para definir contraseña luego del enlace enviado por Supabase.
+- `js/auth.js`: refactorizado para no ejecutar código de login en páginas donde el formulario no existe.
+- Se eliminó dependencia de usuario local/demo para el acceso principal.
+
+### Configurar URLs en Supabase
+
+En Supabase ir a **Authentication > URL Configuration**.
+
+**Site URL para pruebas locales:**
 
 ```txt
-Site URL: https://fmgambino.github.io/TU-REPO
-Redirect URLs:
-https://fmgambino.github.io/TU-REPO/app.html
+http://127.0.0.1:5500
+```
+
+**Redirect URLs** agregar una por una:
+
+```txt
+http://127.0.0.1:5500
+http://127.0.0.1:5500/
+http://127.0.0.1:5500/index.html
 http://127.0.0.1:5500/app.html
-http://localhost:5500/app.html
+http://127.0.0.1:5500/recuperar.html
+http://127.0.0.1:5500/reset-password.html
 ```
 
-Para producción en GitHub Pages, actualizar `SITE_URL` en `js/config.js` con la URL real del repositorio.
-
-## GitHub Pages
-
-Subir todos los archivos a un repositorio público o privado con Pages habilitado.
-
-Recomendado:
+Para GitHub Pages agregar también:
 
 ```txt
-Branch: main
-Folder: /root
+https://fmgambino.github.io/*
 ```
 
-## Importante
+### Crear usuario SuperAdmin recomendado
 
-- `index.html` contiene solo la pantalla de login.
-- `app.html` contiene solo el panel administrativo.
-- El error visual donde login y dashboard aparecían juntos queda corregido separando pantallas y agregando guardia de sesión.
-- `/soporteticket/` queda público para generar tickets sin login.
+1. Supabase > Authentication > Users > Add user.
+2. Email: `fernando.m.gambino@gmail.com`.
+3. Password: la contraseña definida por el administrador.
+4. Activar **Auto Confirm User**.
+5. Ejecutar `supabase/seed_superadmin_profile.sql`.
 
-## Footer
+El perfil debe quedar como:
 
-TICKET MANAGER © 2026 Tucumán - Argentina  
-by Ing. Fernando Gambino · Todos los Derechos Registrados.
+```txt
+role_name = SuperAdmin
+is_active = true
+```
+
+### Google OAuth
+
+En Supabase > Authentication > Sign In / Providers > Google:
+
+1. Activar Google.
+2. Cargar Client ID y Client Secret de Google Cloud Console.
+3. En Google Cloud Console, agregar como Authorized redirect URI la URL que informa Supabase en el proveedor Google.
+4. En Supabase URL Configuration, mantener las Redirect URLs anteriores.
+
+### Nota sobre contraseñas
+
+No se recomienda insertar usuarios manualmente en `auth.users`. Para evitar errores de hash o credenciales inválidas, crear o resetear la contraseña desde Authentication > Users.
+
+## Corrección v8.1 - Login y panel
+
+Se corrigió el error del panel administrativo:
+
+```txt
+supa.rpc(...).catch is not a function
+```
+
+Causa: `supabase-js` devuelve un `PostgrestBuilder` thenable; no debe encadenarse `.catch()` directamente sobre `supa.rpc(...)`. Ahora el inicio del panel usa `try/catch` y `await` correctamente.
+
+### Prueba local recomendada
+
+1. Abrir el proyecto con Live Server.
+2. Usar siempre la URL del puerto activo, por ejemplo:
+
+```txt
+http://127.0.0.1:5501/
+```
+
+3. En Supabase > Authentication > URL Configuration agregar como Redirect URLs, una por una:
+
+```txt
+http://127.0.0.1:5500/*
+http://127.0.0.1:5501/*
+http://localhost:5500/*
+http://localhost:5501/*
+```
+
+4. Crear el usuario desde Authentication > Users:
+
+```txt
+Email: fernando.m.gambino@gmail.com
+Password: Jamboree0342$$
+Auto Confirm User: ACTIVADO
+```
+
+5. Ejecutar:
+
+```txt
+supabase/seed_superadmin_profile.sql
+```
+
+### Flujo validado
+
+- `index.html`: login, Google, creación de usuario y recuperación.
+- `recuperar.html`: envía enlace de recuperación.
+- `reset-password.html`: actualiza contraseña.
+- `app.html`: panel administrativo protegido.
+- `/soporteticket/`: formulario público sin login.

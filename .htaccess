@@ -1,4 +1,4 @@
-# ISM Robosoft - rutas limpias
+<IfModule mod_rewrite.c>
 RewriteEngine On
-RewriteRule ^registro/?$ registro.html [L]
-RewriteRule ^recuperar/?$ recuperar.html [L]
+RewriteRule ^soporteticket/?$ soporteticket/index.html [L]
+</IfModule>
