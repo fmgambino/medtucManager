@@ -24,7 +24,7 @@ supabase/schema_med_tuc_ticket_manager_v7.sql
 
 ```text
 Email: fernando.m.gambino@gmail.com
-Password: Jamboree0342$$
+Password: ********
 ```
 
 4. Ejecutar nuevamente el bloque final del SQL o todo el SQL completo para que el usuario quede como `SuperAdmin` activo.
