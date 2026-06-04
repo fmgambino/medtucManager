@@ -41,7 +41,14 @@ const crud = {
   notifications:{table:'notifications',title:'Notificaciones',desc:'Avisos automáticos, cambios de estado y auditoría operativa.',fields:['title','body','module','target_role','is_read'],labels:['Título','Detalle','Módulo','Perfil destino','Leída'],select:'*'}
 };
 
-function fmt(v) { if (v === true) return '<span class="badge ok">Activo</span>'; if (v === false) return '<span class="badge danger">Inactivo</span>'; if (v === null || v === undefined || v === '') return '-'; if (String(v).includes('T')) return new Date(v).toLocaleString('es-AR'); return esc(v); }
+function fmt(v) {
+  if (v === true) return '<span class="badge ok">Activo</span>';
+  if (v === false) return '<span class="badge danger">Inactivo</span>';
+  if (v === null || v === undefined || v === '') return '-';
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}(T|\s)/.test(s)) { const d = new Date(s); return isNaN(d.getTime()) ? esc(s) : d.toLocaleString('es-AR'); }
+  return esc(v);
+}
 function page(title, desc) { $('#pageTitle').textContent = title; $('#pageDesc').textContent = desc || ''; }
 async function count(table) { const { count, error } = await supa.from(table).select('*', { count:'exact', head:true }); return error ? 0 : (count || 0); }
 async function safeRpc(name, args) { try { const { error } = await supa.rpc(name, args || {}); if (error) console.warn('RPC', name, error.message); } catch (e) { console.warn('RPC no disponible', name, e.message); } }
@@ -1592,5 +1599,251 @@ init().catch(e => { console.error(e); Swal.fire({ icon:'error', title:'Error de 
     const row=(state.rows[key]||[]).find(x=>x.id===id);
     if(!row) return Swal.fire({icon:'info',title:'Registro no encontrado'});
     Swal.fire({title:'Detalle',html:`<pre style="text-align:left;white-space:pre-wrap">${esc17(JSON.stringify(row,null,2))}</pre>`,width:860});
+  };
+})();
+
+
+/* ========================= v8.18 FINAL: Auth estable + Usuarios/Inventario Pro ========================= */
+(function(){
+  const safe = (v)=>String(v ?? '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const validName = (v,email)=>{ const s=String(v||'').trim(); if(!s || s==='Invalid Date' || /^\d{4}-\d{2}-\d{2}/.test(s)) return String(email||'Usuario').split('@')[0].replace(/[._]/g,' ').replace(/\b\w/g,c=>c.toUpperCase()); return s; };
+  const asBool = (v)=> v===true || String(v)==='true';
+  const svgImg = '<svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m21 15-5-5L5 20"/></svg>';
+  const svgPalette = '<svg class="icon" viewBox="0 0 24 24"><path d="M12 22a10 10 0 1 1 10-10c0 2.2-1.8 4-4 4h-1.5a1.5 1.5 0 0 0 0 3H17a5 5 0 0 1-5 3Z"/><circle cx="7.5" cy="10.5" r="1"/><circle cx="10" cy="7.5" r="1"/><circle cx="14" cy="7.5" r="1"/><circle cx="16.5" cy="10.5" r="1"/></svg>';
+
+  window.tmFmt = function(v){
+    if(v===true) return '<span class="badge ok">Activo</span>';
+    if(v===false) return '<span class="badge danger">Inactivo</span>';
+    if(v===null || v===undefined || v==='') return '-';
+    const s=String(v);
+    if(/^\d{4}-\d{2}-\d{2}(T|\s)/.test(s)){ const d=new Date(s); return isNaN(d.getTime()) ? safe(s) : d.toLocaleString('es-AR'); }
+    return safe(s);
+  };
+
+  async function fetchAll(table, select='*', order='created_at'){
+    let q=supa.from(table).select(select).limit(5000);
+    if(order) q=q.order(order,{ascending:false});
+    const {data,error}=await q;
+    if(error){ console.warn(table,error.message); return []; }
+    return data||[];
+  }
+
+  window.renderUsers18 = async function(){
+    page('Usuarios','ABM de usuarios institucionales y perfiles autorizados.');
+    const {data,error}=await supa.from('profiles').select('*').order('created_at',{ascending:false}).limit(5000);
+    if(error) return showPanelError(error);
+    const rows=(data||[]).map(r=>({...r, full_name: validName(r.full_name,r.email)}));
+    state.rows.users=rows; state.selected.users=new Set();
+    const bulk=`<div class="bulkbar"><label class="checkline"><input type="checkbox" onchange="toggleAll('users',this.checked)"> Seleccionar todo</label><button class="btn" onclick="bulkEdit('users')">Editar selección</button><button class="btn danger" onclick="bulkDelete('users')">Eliminar selección</button><span id="sel_users">0 seleccionados</span></div>`;
+    $('#content').innerHTML=`<div class="card users-card"><div class="module-head"><div><h2>Usuarios</h2><p>Usuarios sincronizados con Supabase Auth. Las contraseñas se gestionan mediante Edge Function segura.</p></div><div class="module-actions"><button class="btn primary" onclick="openForm('users')">Nuevo</button><button class="btn" onclick="syncProfilesFromAuth18()">Sincronizar Auth</button><button class="btn" onclick="exportCsv('users')">Exportar CSV</button><button class="btn" onclick="exportPdf('users')">PDF A4</button></div></div><input class="search" placeholder="Buscar usuario, email, perfil u oficina..." oninput="filterRows(this.value)">${bulk}<div class="table-wrap"><table><thead><tr><th></th><th>Nombre completo</th><th>Email</th><th>Perfil</th><th>Oficina/Repartición</th><th>Teléfono</th><th>Activo</th><th>Acciones</th></tr></thead><tbody id="rowsBody">${rows.map(userRow18).join('')||'<tr><td colspan="8">Sin usuarios.</td></tr>'}</tbody></table></div>${bulk}</div>`;
+  };
+  function userRow18(r){return `<tr data-id="${safe(r.id)}" data-search="${safe(Object.values(r).join(' ').toLowerCase())}"><td><input type="checkbox" onchange="toggleOne('users','${safe(r.id)}',this.checked)"></td><td><b>${safe(validName(r.full_name,r.email))}</b></td><td>${safe(r.email)}</td><td>${safe(r.role_name||'Usuarios')}</td><td>${safe(r.office||'-')}</td><td>${safe(r.phone||'-')}</td><td>${asBool(r.is_active)?'<span class="badge ok">Activo</span>':'<span class="badge danger">Inactivo</span>'}</td><td class="row-actions"><button class="icon-mini" onclick="viewRecord('users','${safe(r.id)}')">${ico.view}</button><button class="icon-mini" onclick="openForm('users','${safe(r.id)}')">${ico.edit}</button><button class="icon-mini danger" onclick="deleteRow('users','${safe(r.id)}')">${ico.trash}</button></td></tr>`;}
+
+  async function loadConditions18(){
+    try{ const {data,error}=await supa.from('inventory_conditions').select('*').order('name'); if(error) throw error; return data||[]; }catch(e){ return [
+      {name:'COMPLETO',color:'#22c55e'},{name:'Nuevo',color:'#3b82f6'},{name:'Usado',color:'#f59e0b'},{name:'C/CARGADOR',color:'#64748b'},{name:'S/CARGADOR',color:'#2563eb'}
+    ]; }
+  }
+  function condBadge18(name,conds){ const c=(conds||[]).find(x=>String(x.name).toLowerCase()===String(name).toLowerCase()); const color=c?.color||'#64748b'; return `<span class="cond-badge" style="--cond:${safe(color)}"><i></i>${safe(name)}</span>`; }
+  function parseConds18(v){ return String(v||'').split(',').map(s=>s.trim()).filter(Boolean); }
+
+  window.renderInventory18 = async function(){
+    page('Inventario','Trazabilidad por serie o código de barras, préstamos y devoluciones');
+    const [items,conds]=await Promise.all([fetchAll('inventory_items','*','created_at'), loadConditions18()]);
+    state.rows.inventory=items; state.inventoryConditions=conds; state.selected.inventory=new Set();
+    const pager='<div class="pager"><label>Listar <select onchange="state.pagination.inventory={page:1,size:Number(this.value)};renderInventory18()">'+[5,10,25,50,100,500].map(n=>`<option value="${n}" ${(state.pagination.inventory?.size||5)==n?'selected':''}>${n}</option>`).join('')+'</select></label><span>'+items.length+' registros</span></div>';
+    const size=state.pagination.inventory?.size||5, pageNo=state.pagination.inventory?.page||1, start=(pageNo-1)*size, pageRows=items.slice(start,start+size), pages=Math.max(1,Math.ceil(items.length/size));
+    $('#content').innerHTML=`<div class="card inventory-card-pro"><div class="module-head"><div><h2>Control y trazabilidad</h2><p>Cada insumo permite saber quién lo tiene, marca, empresa/proveedor, locación, zona, estado y código de barras.</p></div><div class="module-actions"><button class="btn" onclick="importCsv('inventory')">Importar CSV</button><button class="btn" onclick="exportCsv('inventory')">Exportar CSV</button><button class="btn" onclick="printInventoryBarcodes18()">Imprimir barcodes</button><button class="btn" onclick="showInventoryCharts18()">Ver gráficos</button><button class="btn primary" onclick="openForm('inventory')">Nuevo insumo</button></div></div><input class="search" placeholder="Buscar por código, item, marca, empresa, serie, barcode, locación o zona" oninput="filterRows(this.value)"><select class="search"><option>Todos los estados</option></select><select class="search"><option>Todos los tipos</option></select><div class="bulkbar"><label class="checkline"><input type="checkbox" onchange="toggleAll('inventory',this.checked)"> Seleccionar todo</label><button class="btn" onclick="generateSelectedCodes18()">Generar código</button><button class="btn" onclick="bulkEdit('inventory')">Editar selección</button><button class="btn danger" onclick="bulkDelete('inventory')">Eliminar selección</button><span id="sel_inventory">0 seleccionados</span></div>${pager}<div class="table-wrap"><table class="inventory-table-pro"><thead><tr><th></th><th>Código</th><th>Tipo</th><th>Marca</th><th>Empresa</th><th>N° serie</th><th>Barcode</th><th>Estado</th><th>Condición</th><th>Locación</th><th>Zona</th><th>Ubicación</th><th>Acciones</th></tr></thead><tbody id="rowsBody">${pageRows.map(r=>inventoryRow18(r,conds)).join('')||'<tr><td colspan="13">Sin inventario.</td></tr>'}</tbody></table></div><div class="pager"><button class="btn" ${pageNo<=1?'disabled':''} onclick="state.pagination.inventory.page--;renderInventory18()">← Anterior</button><b>${pageNo} / ${pages}</b><button class="btn" ${pageNo>=pages?'disabled':''} onclick="state.pagination.inventory.page++;renderInventory18()">Siguiente →</button></div></div>`;
+  };
+  function inventoryRow18(r,conds){ const img=r.image_url||r.image||''; const code=r.code||r.sku||''; const barcode=r.barcode||code||r.serial_number||''; const condsHtml=parseConds18(r.condition).map(c=>condBadge18(c,conds)).join(' '); return `<tr data-id="${safe(r.id)}" data-search="${safe(Object.values(r).join(' ').toLowerCase())}"><td><input type="checkbox" onchange="toggleOne('inventory','${safe(r.id)}',this.checked)"></td><td><div class="inv-code-cell">${img?`<img src="${safe(img)}" onerror="this.src='assets/avatar-default.svg'">`:svgImg}<div><b>${safe(code||'-')}</b><small>${safe(r.name||'')}</small></div></div></td><td>${safe(r.item_type||r.type||r.category||'-')}</td><td>${safe(r.brand||'-')}</td><td>${safe(r.company||r.provider||r.model||'-')}</td><td>${safe(r.serial_number||'-')}</td><td><div class="barcode-mini"><span>${safe(barcode||'-')}</span></div></td><td><span class="badge ok">${safe(r.status||'Disponible')}</span></td><td>${condsHtml||'-'}</td><td>${safe(r.physical_location||r.location||'-')}</td><td>${safe(r.zone||'-')}</td><td>${safe(r.location||'-')}</td><td class="row-actions"><button class="icon-mini" onclick="viewRecord('inventory','${safe(r.id)}')">${ico.view}</button><button class="icon-mini" onclick="openForm('inventory','${safe(r.id)}')">${ico.edit}</button><button class="icon-mini danger" onclick="deleteRow('inventory','${safe(r.id)}')">${ico.trash}</button></td></tr>`; }
+
+  function inventoryForm18(r={},conds=[]){ const condOptions=(conds||[]).map(c=>`<option value="${safe(c.name)}" ${parseConds18(r.condition).includes(c.name)?'selected':''}>${safe(c.name)}</option>`).join(''); return `<div class="tm-form inventory-form-pro v18"><div class="swal-grid">
+    <label>Nombre / descripción<input id="f_name" value="${safe(r.name||'')}" placeholder="Ej. Arduino UNO"></label><label>Categoría<input id="f_category" value="${safe(r.category||'')}" placeholder="Robótica / Sensores"></label>
+    <label>Marca<input id="f_brand" value="${safe(r.brand||'')}" placeholder="Ej. Arduino, SetVeintiUno"></label><label>Empresa / proveedor<input id="f_company" value="${safe(r.company||r.provider||r.model||'')}" placeholder="Ej. BQ Educación"></label>
+    <label>Tipo<select id="f_item_type"><option ${String(r.item_type||r.type||'Equipo')==='Equipo'?'selected':''}>Equipo</option><option ${String(r.item_type||r.type)==='Insumo'?'selected':''}>Insumo</option><option ${String(r.item_type||r.type)==='Herramienta'?'selected':''}>Herramienta</option></select></label><label>Código interno<input id="f_code" value="${safe(r.code||'')}" placeholder="Opcional"></label>
+    <label>Cantidad<input id="f_stock" type="number" value="${safe(r.stock??r.quantity??1)}"></label><label>N° serie<input id="f_serial_number" value="${safe(r.serial_number||'')}" placeholder="Opcional"></label>
+    <label>Barcode<input id="f_barcode" value="${safe(r.barcode||'')}" placeholder="Opcional, se genera solo"></label><label>Ubicación general<input id="f_location" value="${safe(r.location||'Laboratorio de Robótica')}"></label>
+    <label>Locación física<input id="f_physical_location" value="${safe(r.physical_location||'')}" placeholder="Gabinete, Maletín, Cajón"></label><label>Zona<input id="f_zone" value="${safe(r.zone||'')}" placeholder="Ej. A1, A2, B3"></label>
+    <label>Estado<select id="f_status"><option ${String(r.status||'Disponible')==='Disponible'?'selected':''}>Disponible</option><option ${String(r.status)==='Prestado'?'selected':''}>Prestado</option><option ${String(r.status)==='Mantenimiento'?'selected':''}>Mantenimiento</option><option ${String(r.status)==='Baja'?'selected':''}>Baja</option></select></label>
+    <label class="full">Condiciones <button type="button" class="mini-add" onclick="addInventoryCondition18()">+</button>${svgPalette}<select id="f_condition" multiple size="5">${condOptions}</select><small>Podés seleccionar varias condiciones con Ctrl/Cmd. Usá + para crear una condición con color.</small></label>
+    <label class="full">Imagen del insumo/equipo<input id="f_image_file" type="file" accept="image/*"><input id="f_image_url" value="${safe(r.image_url||'')}" placeholder="URL o imagen base64 opcional"></label>
+    </div></div>`; }
+
+  window.addInventoryCondition18 = async function(){
+    const {value}=await Swal.fire({title:'Nueva condición',html:`<div class="swal-grid"><label>Nombre<input id="new_cond_name" placeholder="Ej. Reparado"></label><label>Color<input id="new_cond_color" type="color" value="#22c55e"></label></div>`,showCancelButton:true,confirmButtonText:'Agregar',customClass:{popup:'tm-modal'},preConfirm:()=>({name:$('#new_cond_name')?.value?.trim(), color:$('#new_cond_color')?.value})});
+    if(!value?.name) return;
+    try{ await supa.from('inventory_conditions').upsert({name:value.name,color:value.color},{onConflict:'name'}); }catch(e){}
+    const sel=$('#f_condition'); if(sel){ const opt=document.createElement('option'); opt.value=value.name; opt.textContent=value.name; opt.selected=true; sel.appendChild(opt); }
+  };
+
+  async function imageToBase64(file){ return new Promise((res,rej)=>{ const fr=new FileReader(); fr.onload=()=>res(fr.result); fr.onerror=rej; fr.readAsDataURL(file); }); }
+
+  const prevOpenForm18 = window.openForm;
+  window.openForm = async function(key,id=null){
+    if(key==='inventory'){
+      const row=id?(state.rows.inventory||[]).find(x=>String(x.id)===String(id))||{}:{};
+      const conds=await loadConditions18();
+      const {value}=await Swal.fire({title:id?'Editar insumo / equipo':'Nuevo insumo / equipo',html:inventoryForm18(row,conds),width:900,showCancelButton:true,confirmButtonText:id?'Guardar cambios':'Guardar',cancelButtonText:'Cancelar',customClass:{popup:'tm-modal inventory-modal'},preConfirm:async()=>{
+        const selected=Array.from($('#f_condition')?.selectedOptions||[]).map(o=>o.value).join(', ');
+        let image=$('#f_image_url')?.value||null; const file=$('#f_image_file')?.files?.[0]; if(file) image=await imageToBase64(file);
+        const payload={name:$('#f_name').value,category:$('#f_category').value,brand:$('#f_brand').value,model:$('#f_company').value,company:$('#f_company').value,item_type:$('#f_item_type').value,code:$('#f_code').value||null,stock:Number($('#f_stock').value||1),serial_number:$('#f_serial_number').value||null,barcode:$('#f_barcode').value||$('#f_code').value||$('#f_serial_number').value||null,location:$('#f_location').value,physical_location:$('#f_physical_location').value,zone:$('#f_zone').value,status:$('#f_status').value,condition:selected,image_url:image};
+        if(!payload.name) {Swal.showValidationMessage('Nombre / descripción obligatorio.'); return false;} return payload;
+      }});
+      if(!value) return; const res=id?await supa.from('inventory_items').update(value).eq('id',id):await supa.from('inventory_items').insert(value); if(res.error) return Swal.fire({icon:'error',title:'No se pudo guardar',text:res.error.message}); await Swal.fire({icon:'success',title:'Inventario guardado',timer:1200,showConfirmButton:false}); renderInventory18(); return;
+    }
+    return prevOpenForm18 ? prevOpenForm18(key,id) : null;
+  };
+
+  window.viewRecord = async function(key,id){
+    const row=(state.rows[key]||[]).find(x=>String(x.id)===String(id)); if(!row) return Swal.fire({icon:'info',title:'Registro no encontrado'});
+    if(key==='users') return Swal.fire({title:'Detalle de usuario',html:`<div class="detail-card user-detail modern-detail"><img class="detail-avatar" src="${safe(row.avatar_url||'assets/avatar-default.svg')}" onerror="this.src='assets/avatar-default.svg'"><h3>${safe(validName(row.full_name,row.email))}</h3><span class="profile-pill">${safe(row.role_name||'-')}</span><div class="detail-grid"><p><b>Email</b><span>${safe(row.email||'-')}</span></p><p><b>Oficina</b><span>${safe(row.office||'-')}</span></p><p><b>Teléfono</b><span>${safe(row.phone||'-')}</span></p><p><b>Activo</b><span>${asBool(row.is_active)?'Sí':'No'}</span></p></div></div>`,width:760,customClass:{popup:'tm-modal'}});
+    if(key==='inventory'){ const img=row.image_url||''; const conds=state.inventoryConditions||await loadConditions18(); return Swal.fire({title:'Detalle de inventario',html:`<div class="detail-card inventory-detail modern-detail">${img?`<img class="detail-item-img" src="${safe(img)}" onerror="this.style.display='none'">`:''}<h3>${safe(row.name||row.code||'Insumo / equipo')}</h3><span class="profile-pill">${safe(row.status||'Disponible')}</span><div class="detail-grid"><p><b>ID</b><span>${safe(row.id)}</span></p><p><b>Código</b><span>${safe(row.code||'-')}</span></p><p><b>Insumo</b><span>${safe(row.name||'-')}</span></p><p><b>Tipo</b><span>${safe(row.item_type||row.category||'-')}</span></p><p><b>N° serie</b><span>${safe(row.serial_number||'-')}</span></p><p><b>Código de barras</b><span>${safe(row.barcode||'-')}</span></p><p><b>Estado</b><span>${safe(row.status||'-')}</span></p><p><b>Condición</b><span>${parseConds18(row.condition).map(c=>condBadge18(c,conds)).join(' ')||'-'}</span></p><p><b>Ubicación</b><span>${safe(row.location||'-')}</span></p><p><b>Categoría</b><span>${safe(row.category||'-')}</span></p><p><b>Marca</b><span>${safe(row.brand||'-')}</span></p><p><b>Empresa / proveedor</b><span>${safe(row.company||row.model||'-')}</span></p><p><b>Locación física</b><span>${safe(row.physical_location||'-')}</span></p><p><b>Zona</b><span>${safe(row.zone||'-')}</span></p><p><b>Cantidad</b><span>${safe(row.stock??1)}</span></p></div></div>`,width:760,customClass:{popup:'tm-modal'}}); }
+    return Swal.fire({title:'Detalle',html:`<pre style="text-align:left;white-space:pre-wrap">${safe(JSON.stringify(row,null,2))}</pre>`,width:860});
+  };
+
+  window.syncProfilesFromAuth18 = async function(){ await supa.rpc('ensure_current_user_profile').catch(()=>null); await renderUsers18(); };
+  window.printInventoryBarcodes18 = function(){ window.print(); };
+  window.showInventoryCharts18 = function(){ Swal.fire({title:'Gráficos de inventario',html:'<p>Los gráficos usan los registros actualmente cargados del inventario.</p>',customClass:{popup:'tm-modal'}}); };
+  window.generateSelectedCodes18 = async function(){ const ids=Array.from(state.selected.inventory||[]); if(!ids.length) return Swal.fire({icon:'info',title:'Seleccione registros'}); for(const id of ids){ const code='SKU-'+String(id).slice(0,8).toUpperCase(); await supa.from('inventory_items').update({code}).eq('id',id); } renderInventory18(); };
+
+  const oldRoute18 = window.route || route;
+  try { route = window.route = async function(p){
+    if(p==='users') return renderUsers18();
+    if(p==='inventory') return renderInventory18();
+    return oldRoute18(p);
+  }; } catch(e){ window.route = async function(p){ if(p==='users') return renderUsers18(); if(p==='inventory') return renderInventory18(); return oldRoute18(p); }; }
+})();
+
+
+/* ========================= v8.19 FINAL: Auth UX + Usuarios + Inventario estable ========================= */
+(function(){
+  const safe = (v) => String(v ?? '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const validText = (v, fb='-') => {
+    const s = String(v ?? '').trim();
+    return (!s || s === 'Invalid Date' || s === 'null' || s === 'undefined') ? fb : s;
+  };
+  const nameFromEmail = (email) => String(email||'').split('@')[0].replace(/[._-]+/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
+  const profileName = (u) => validText(u?.full_name, nameFromEmail(u?.email));
+  const boolBadge = (v) => (v===false || String(v)==='false') ? '<span class="badge danger">Inactivo</span>' : '<span class="badge ok">Activo</span>';
+  window.fmtProfileCell819 = (v, fb='-') => safe(validText(v, fb));
+
+  const originalFmt819 = window.fmt;
+  try {
+    window.fmt = function(v){
+      if (v === true) return '<span class="badge ok">Activo</span>';
+      if (v === false) return '<span class="badge danger">Inactivo</span>';
+      const s = String(v ?? '').trim();
+      if (!s || s === 'Invalid Date' || s === 'null' || s === 'undefined') return '-';
+      if (/^\d{4}-\d{2}-\d{2}(T|\s)/.test(s)) {
+        const d = new Date(s);
+        return isNaN(d.getTime()) ? safe(s) : d.toLocaleString('es-AR');
+      }
+      return safe(s);
+    };
+  } catch(e) {}
+
+  async function getUsers819(){
+    const { data, error } = await supa.from('profiles').select('*').order('created_at',{ascending:false});
+    if(error) throw error;
+    return (data||[]).map(u => ({
+      ...u,
+      full_name: profileName(u),
+      role_name: validText(u.role_name,'Usuarios'),
+      office: validText(u.office,'-')
+    }));
+  }
+
+  window.renderUsers18 = window.renderUsers18 || async function(){};
+  window.renderUsers819 = async function(){
+    page('Usuarios','ABM de usuarios institucionales y perfiles autorizados.');
+    let rows=[];
+    try { rows = await getUsers819(); } catch(e){ return showPanelError(e); }
+    state.rows.users = rows;
+    const table = `<div class="card"><div class="module-head"><div><h2>Usuarios</h2><p>Usuarios institucionales sincronizados con Supabase Auth y perfiles del sistema.</p></div><div class="module-actions"><button class="btn primary" onclick="openForm('users')">Nuevo</button><button class="btn" onclick="exportCsv('users')">Exportar CSV</button><button class="btn" onclick="exportPdf('users')">PDF A4</button></div></div>
+      <input class="search" placeholder="Buscar en Usuarios..." oninput="filterRows(this.value)">
+      <div class="bulkbar"><label class="checkline"><input type="checkbox" onchange="toggleAll('users',this.checked)"> Seleccionar todo</label><button class="btn" onclick="bulkEdit('users')">Editar selección</button><button class="btn danger" onclick="bulkDelete('users')">Eliminar selección</button><span id="sel_users">0 seleccionados</span></div>
+      <div class="table-wrap"><table><thead><tr><th></th><th>Nombre completo</th><th>Email</th><th>Perfil</th><th>Oficina/Repartición</th><th>Teléfono</th><th>Activo</th><th>Acciones</th></tr></thead><tbody id="rowsBody">
+        ${rows.map(u=>`<tr data-id="${safe(u.id)}" data-search="${safe(Object.values(u).join(' ').toLowerCase())}">
+          <td><input type="checkbox" onchange="toggleOne('users','${safe(u.id)}',this.checked)"></td>
+          <td>${safe(profileName(u))}</td><td>${safe(u.email||'-')}</td><td>${safe(validText(u.role_name,'Usuarios'))}</td><td>${safe(validText(u.office,'-'))}</td><td>${safe(validText(u.phone,'-'))}</td><td>${boolBadge(u.is_active)}</td>
+          <td class="row-actions"><button class="icon-mini" title="Ver" onclick="viewRecord('users','${safe(u.id)}')">${ico.view}</button><button class="icon-mini" title="Editar" onclick="openForm('users','${safe(u.id)}')">${ico.edit}</button><button class="icon-mini danger" title="Eliminar" onclick="deleteRow('users','${safe(u.id)}')">${ico.trash}</button></td>
+        </tr>`).join('') || '<tr><td colspan="8">Sin usuarios.</td></tr>'}
+      </tbody></table></div></div>`;
+    $('#content').innerHTML = table;
+  };
+
+  function userForm819(u={}){
+    const roles=['SuperAdmin','Admin','Técnicos','Usuarios'];
+    const canSA=String(state.profile?.role_name||'')==='SuperAdmin';
+    const currentRole = validText(u.role_name,'Usuarios');
+    return `<div class="tm-form user-form v819"><div class="tm-form-header"><div class="tm-form-avatar">${ico.users}</div><p>Complete los datos solicitados para crear o actualizar el usuario institucional.</p></div><div class="swal-grid">
+      <label>Nombre completo<input id="f_full_name" value="${safe(profileName(u))}" placeholder="Ej. Ing. Gerardo Toro"></label>
+      <label>Email<input id="f_email" type="email" value="${safe(u.email||'')}" ${u.id?'readonly':''}></label>
+      <label>Perfil<select id="f_role_name">${roles.map(r=>`<option value="${r}" ${currentRole===r?'selected':''} ${r==='SuperAdmin'&&!canSA?'disabled':''}>${r}</option>`).join('')}</select><small>Solamente SuperAdmin puede asignar otro SuperAdmin.</small></label>
+      <label>Oficina/Repartición<input id="f_office" value="${safe(validText(u.office,''))}" placeholder="Dirección de Informática"></label>
+      <label>Teléfono<input id="f_phone" value="${safe(validText(u.phone,''))}"></label>
+      <label>Activo<select id="f_is_active"><option value="true" ${u.is_active!==false?'selected':''}>Sí</option><option value="false" ${u.is_active===false?'selected':''}>No</option></select></label>
+      ${canSA?`<label class="full password-box"><b>Contraseña ${u.id?'nueva / modificar':'inicial'}</b><div class="password-row"><input id="f_password" type="password" placeholder="${u.id?'Dejar vacío para no cambiar':'Mínimo 6 caracteres'}" autocomplete="new-password"><button type="button" class="icon-mini" onclick="togglePasswordField('f_password',this)">${ico.view}</button></div><small>Para crear usuarios desde la PWA debe estar desplegada la Edge Function <b>admin-create-user</b>. Si no está desplegada, cree el usuario desde Authentication → Users y luego sincronice el perfil.</small></label>`:''}
+    </div></div>`;
+  }
+
+  const oldOpenForm819 = window.openForm;
+  window.openForm = async function(key,id=null){
+    if(key==='users'){
+      if(String(state.profile?.role_name||'')!=='SuperAdmin') return Swal.fire({icon:'warning',title:'Acceso restringido',text:'Sólo SuperAdmin puede crear o editar usuarios.'});
+      let row = id ? (state.rows.users||[]).find(x=>String(x.id)===String(id)) : {};
+      row = row || {};
+      const {value}=await Swal.fire({title:id?'Editar Usuario':'Nuevo Usuario',html:userForm819(row),width:900,showCancelButton:true,confirmButtonText:'Guardar',cancelButtonText:'Cancelar',customClass:{popup:'tm-modal user-modal'},preConfirm:()=>{
+        const v={
+          p_email: ($('#f_email')?.value||'').trim().toLowerCase(),
+          p_full_name: ($('#f_full_name')?.value||'').trim(),
+          p_role_name: $('#f_role_name')?.value||'Usuarios',
+          p_office: ($('#f_office')?.value||'').trim()||null,
+          p_phone: ($('#f_phone')?.value||'').trim()||null,
+          p_is_active: String($('#f_is_active')?.value)==='true',
+          p_password: $('#f_password')?.value||''
+        };
+        if(!v.p_email || !v.p_full_name) { Swal.showValidationMessage('Nombre completo y email son obligatorios.'); return false; }
+        if(!id && (!v.p_password || v.p_password.length<6)) { Swal.showValidationMessage('Para crear usuario indique contraseña mínima de 6 caracteres.'); return false; }
+        if(v.p_password && v.p_password.length<6) { Swal.showValidationMessage('La contraseña debe tener al menos 6 caracteres.'); return false; }
+        return v;
+      }});
+      if(!value) return;
+      try{
+        const fn = await supa.functions.invoke('admin-create-user', { body:value });
+        if(fn.error) throw fn.error;
+        if(fn.data && fn.data.error) throw new Error(fn.data.error);
+        await Swal.fire({icon:'success',title:'Usuario guardado',text:'Auth y perfil sincronizados correctamente.',timer:1400,showConfirmButton:false});
+        await renderUsers819();
+      }catch(e){
+        await Swal.fire({icon:'error',title:'No se pudo guardar el usuario',html:`${safe(e.message||String(e))}<br><br><b>Verifique:</b> Edge Function <code>admin-create-user</code> desplegada y variable <code>SUPABASE_SERVICE_ROLE_KEY</code> configurada.`});
+      }
+      return;
+    }
+    return oldOpenForm819 ? oldOpenForm819(key,id) : null;
+  };
+
+  const oldViewRecord819 = window.viewRecord;
+  window.viewRecord = async function(key,id){
+    if(key==='users'){
+      const row=(state.rows.users||[]).find(x=>String(x.id)===String(id));
+      if(!row) return Swal.fire({icon:'info',title:'Usuario no encontrado'});
+      return Swal.fire({title:'Detalle de usuario',html:`<div class="detail-card user-detail modern-detail"><img class="detail-avatar" src="${safe(row.avatar_url||'assets/avatar-default.svg')}" onerror="this.src='assets/avatar-default.svg'"><h3>${safe(profileName(row))}</h3><span class="profile-pill">${safe(validText(row.role_name,'Usuarios'))}</span><div class="detail-grid"><p><b>Email</b><span>${safe(row.email||'-')}</span></p><p><b>Oficina</b><span>${safe(validText(row.office,'-'))}</span></p><p><b>Teléfono</b><span>${safe(validText(row.phone,'-'))}</span></p><p><b>Activo</b><span>${row.is_active!==false?'Sí':'No'}</span></p><p><b>Fuente</b><span>${safe(validText(row.source,'-'))}</span></p></div></div>`,width:760,customClass:{popup:'tm-modal'}});
+    }
+    return oldViewRecord819 ? oldViewRecord819(key,id) : null;
+  };
+
+  // Route final: asegura que Usuarios use el render corregido.
+  const routePrev819 = window.route || route;
+  try {
+    route = window.route = async function(p){
+      if(p==='users') return renderUsers819();
+      return routePrev819(p);
+    };
+  } catch(e) { window.route = async function(p){ if(p==='users') return renderUsers819(); return routePrev819(p); }; }
+
+  // Aviso técnico claro cuando Supabase Auth devuelve 500.
+  window.explainAuth500819 = function(){
+    return 'Supabase Auth está devolviendo 500 en /auth/v1/token. Ejecute el SQL v8.19 para limpiar triggers rotos, confirmar usuarios y reparar identidades. Luego use Authentication → Users o la Edge Function para crear cuentas.';
   };
 })();

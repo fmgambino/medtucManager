@@ -313,3 +313,18 @@ function registerServiceWorker() {
     showError('Error de autenticación', err);
   }
 })();
+
+
+/* ========================= v8.19 Login/Create Account UX ========================= */
+(function(){
+  const safe = (v) => String(v ?? '').replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  const oldShowError = window.showError;
+  window.showFriendlyLoginError819 = function(err){
+    const msg = err?.message || String(err||'');
+    if(/Database error querying schema|Internal Server Error|500/i.test(msg)){
+      return 'Supabase Auth devolvió un error interno al validar el usuario. Ejecute el SQL v8.19, confirme el usuario en Authentication → Users y verifique que no existan triggers rotos sobre auth.users.';
+    }
+    if(/Email not confirmed/i.test(msg)) return 'El email todavía no está confirmado. Active Auto Confirm User o confirme el usuario desde Authentication → Users.';
+    return msg;
+  };
+})();
