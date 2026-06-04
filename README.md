@@ -307,3 +307,24 @@ También se corrigió el favicon oficial y el header mobile usa el ícono compac
 3. Verificar que los profesionales técnicos existan en Authentication > Users. Si ya existen, el script corrige `public.profiles` y RLS para evitar el error de login “Database error querying schema”.
 
 Cambios incluidos: dashboard ejecutivo con calendario, tema claro/oscuro corregido, foto de perfil por click en avatar, logout visible, logos oficiales en PDF, notas institucionales A4 con firma seleccionable, limpieza de importes heredados en PDF y notificaciones con preparación de email.
+
+## v8.11 - Corrección solicitada
+
+- Hotfix de login para usuarios con rol **Técnicos** y contraseña inicial `tecnico123456`.
+- Se agrega reparación de `auth.identities` para evitar el error Supabase Auth `Database error querying schema` / HTTP 500 en `/auth/v1/token`.
+- Dashboard: calendario con flechas de mes, selector de año y apertura del detalle de Orden de Servicio al hacer clic.
+- Popup de detalle de Orden de Servicio con acciones superiores: ir al módulo, editar y eliminar.
+- Notificaciones: paginación 5/10/25/50/100/500/1000 y botones Atrás/Siguiente.
+- Ajustes CSS en Nota Institucional e ícono SVG profesional minimalista.
+
+Ejecutar en Supabase SQL Editor:
+
+```sql
+-- Archivo incluido:
+supabase/schema_med_tuc_ticket_manager_v8_11.sql
+```
+
+
+
+## v8.12
+Ejecutar `supabase/schema_med_tuc_ticket_manager_v8_12.sql` para corregir login de usuarios técnicos, trigger Auth y administración de contraseñas desde SuperAdmin.

@@ -116,7 +116,6 @@ function bindLoginForm() {
     try {
       if (window.Swal) Swal.showLoading();
       await loginWithEmail(email, password);
-      await showOk('Acceso validado', 'Bienvenido al panel institucional.');
       window.location.href = './app.html';
     } catch (err) {
       showError('No se pudo iniciar sesión', err);
